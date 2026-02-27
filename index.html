@@ -1,39 +1,53 @@
 <!DOCTYPE html>
-<!-- Updated wind table with sorting on $(date) -->
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
 <title>香港 10 分鐘風向/風速</title>
 <style>
-  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;margin:2rem;background:#f0f8ff;}
-  h1{text-align:center;}
-  .card{background:#fff;padding:1rem;margin-bottom:1.5rem;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.07);}
-  table{width:100%;border-collapse:collapse;margin-top:.5rem;}
-  th,td{border:1px solid #ddd;padding:.5rem;text-align:center;}
-  th{background:#eee;cursor:pointer;}
-  th:hover{background:#ddd;}
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 2rem; background: #f0f8ff; }
+  h1 { text-align: center; }
+  .card { background: #fff; padding: 1rem; margin-bottom: 1.5rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.07); }
+  table { width: 100%; border-collapse: collapse; margin-top: .5rem; }
+  th, td { border: 1px solid #ddd; padding: .5rem; text-align: center; }
+  th { background: #eee; cursor: pointer; }
+  th:hover { background: #ddd; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-function windArrow(deg){
-  const size=20; const rad=(deg-90)*Math.PI/180;
-  const x=size/2+(size/2)*Math.cos(rad);
-  const y=size/2+(size/2)*Math.sin(rad);
-  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><line x1="${size/2}" y1="${size/2}" x2="${x}" y2="${y}" stroke="#1e90ff" stroke-width="2"/><circle cx="${size/2}" cy="${size/2}" r="${size/4}" fill="#1e90ff"/></svg>`;
+// 生成風向箭頭 SVG
+function windArrow(deg) {
+  const size = 20;
+  const rad = (deg - 90) * Math.PI / 180;
+  const x = size / 2 + (size / 2) * Math.cos(rad);
+  const y = size / 2 + (size / 2) * Math.sin(rad);
+  return `
+    <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+      <line x1="${size / 2}" y1="${size / 2}" x2="${x}" y2="${y}"
+            stroke="#1e90ff" stroke-width="2" />
+      <circle cx="${size / 2}" cy="${size / 2}" r="${size / 4}" fill="#1e90ff" />
+    </svg>`;
 }
 
-let windData = [];  // 全域數據，按時間降序排序
-let filtered = [];  // 過濾後數據，也排序
+let windData = [];   // 全域資料，從 API 拿來
+let filtered = [];   // 篩選後的資料
 
-// 排序函數：降序（最新時間在上）
+// 按時間降序排序（最新在上）
 function sortByTimeDesc(a, b) {
-  return new Date(b.time) - new Date(a.time);  // b.time - a.time 確保降序
+  return new Date(b.time) - new Date(a.time);
 }
 
+// 步驟一：載入資料
 async function load() {
   try {
     const resp = await fetch('https://portal.csdi.gov.hk/geoportal/api/records/1.0/search?datasetId=hko_rcd_1634953844424_88011&lang=zh-hk&format=geojson&limit=500');
+    
+    if (!resp.ok) {
+      throw new Error(`HTTP Error: ${resp.status}`);
+    }
+
     const geo = await resp.json();
+    
+    // 將 geoJSON 轉成你需要的 JSON 陣列
     windData = geo.features
       .map(f => ({
         district: f.properties.district,
@@ -42,19 +56,26 @@ async function load() {
         speed: f.properties.wind_spd,
         maxspeed: f.properties.wind_max
       }))
-      .sort(sortByTimeDesc);  // ★ 新增：載入後立即全域排序降序
+      .sort(sortByTimeDesc);  // 一開始就排序降序
+
+    // 填入「選擇區域名單」
     populateSelect();
-    apply();  // 自動套用預設顯示
+    // 預設顯示「全部」
+    apply();
+    
   } catch (error) {
     console.error('載入失敗：', error);
-    document.getElementById('body').innerHTML = '<tr><td colspan="5">載入數據失敗，請檢查網路</td></tr>';
+    document.getElementById('body').innerHTML = `
+      <tr><td colspan="5" style="color:red;">載入數據失敗，請檢查網路或API</td></tr>`;
   }
 }
 
+// 步驟二：建立「區域」下拉選單
 function populateSelect() {
   const sel = document.getElementById('district');
-  const districts = ['全部', ...new Set(windData.map(d => d.district))].sort();  // 排序區域名稱
-  sel.innerHTML = '';
+  const districts = ['全部', ...new Set(windData.map(d => d.district))].sort();
+  sel.innerHTML = '';  // 清空
+
   districts.forEach(d => {
     const o = document.createElement('option');
     o.value = d;
@@ -63,20 +84,41 @@ function populateSelect() {
   });
 }
 
+// 步驟三：根據「選擇的區域」過濾 + 重新排序
 function apply() {
   const sel = document.getElementById('district');
   const choice = sel.value;
-  filtered = choice === '全部' ? [...windData] : windData.filter(d => d.district === choice);
-  filtered.sort(sortByTimeDesc);  // ★ 新增：過濾後重新排序確保最新在上
+
+  // 過濾：全部就顯示全部，否則只選該區
+  filtered = choice === '全部'
+    ? [...windData] 
+    : windData.filter(d => d.district === choice);
+  
+  // 過濾後再排序，確保「最新在上」
+  filtered.sort(sortByTimeDesc);
+  
+  // 呼叫渲染表格和圖表
   renderTable();
   renderChart();
-  const latest = filtered[0] || windData[0];  // 取第一筆（最新）
-  document.getElementById('updated').textContent = '最新資料時間：' + (latest ? latest.time.replace('T', ' ').replace('+08:00', '') : '—');
+
+  // 更新「最新資料時間」顯示
+  const latest = filtered[0] || windData[0];
+  document.getElementById('updated').textContent = 
+    '最新資料時間：' + (latest 
+      ? latest.time.replace('T', ' ').replace('+08:00', '') 
+      : '—');
 }
 
+// 步驟四：渲染表格
 function renderTable() {
   const tbody = document.getElementById('body');
-  tbody.innerHTML = '';
+  tbody.innerHTML = '';  // 清空
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5">目前沒有資料</td></tr>';
+    return;
+  }
+
   filtered.forEach(d => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
@@ -84,51 +126,81 @@ function renderTable() {
       <td>${new Date(d.time).toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong' })}</td>
       <td>${windArrow(d.direction)}</td>
       <td>${d.speed.toFixed(1)}</td>
-      <td>${d.maxspeed.toFixed(1)}</td>
-    `;
+      <td>${d.maxspeed.toFixed(1)}</td>`;
     tbody.appendChild(tr);
   });
 }
 
+// 步驟五：渲染折線圖
 function renderChart() {
   const ctx = document.getElementById('chart').getContext('2d');
-  const labels = filtered.slice(0, 20).map(d => new Date(d.time).toLocaleTimeString('zh-HK'));  // 只取前20筆避免圖太大
+  
+  // 只取前 20 筆，避免圖太大
+  const dataToShow = filtered.slice(0, 20);
+  const labels = dataToShow.map(d => {
+    return new Date(d.time).toLocaleTimeString('zh-HK', { timeZone: 'Asia/Hong_Kong' });
+  });
   const data = {
     label: '平均風速 (m/s)',
-     filtered.slice(0, 20).map(d => d.speed),
+     dataToShow.map(d => d.speed),
     borderColor: '#1e90ff',
     fill: false,
     tension: 0.2
   };
+
+  // 如果之前有圖表，把它先砍掉再重新建立
   if (window.myChart) window.myChart.destroy();
+
   window.myChart = new Chart(ctx, {
     type: 'line',
      { labels, datasets: [data] },
-    options: { responsive: true, scales: { y: { beginAtZero: true } } }
+    options: {
+      responsive: true,
+      scales: { y: { beginAtZero: true } }
+    }
   });
 }
 
+// 頁面載入後開始載入資料
 window.addEventListener('load', load);
 </script>
 </head>
 <body>
 <h1>📍 香港 10 分鐘風向/風速（最新優先）</h1>
+
 <div class="card">
   <label for="district">選擇區域：</label>
-  <select id="district" onchange="apply()"><option>載入中…</option></select>
-  <p id="updated" style="color:#666;"></p>
+  <select id="district" onchange="apply()">
+    <option>載入中…</option>
+  </select>
+  <p id="updated" style="color:#666;margin-top:0.5rem;"></p>
 </div>
+
 <div class="card">
   <table>
     <thead>
       <tr>
-        <th>區域</th><th>時間</th><th>風向</th><th>平均風速 (m/s)</th><th>最高陣風 (m/s)</th>
+        <th>區域</th>
+        <th>時間</th>
+        <th>風向</th>
+        <th>平均風速 (m/s)</th>
+        <th>最高陣風 (m/s)</th>
       </tr>
     </thead>
-    <tbody id="body"><tr><td colspan="5">載入中…</td></tr></tbody>
+    <tbody id="body">
+      <tr><td colspan="5">載入中…</td></tr>
+    </tbody>
   </table>
 </div>
-<div class="card"><canvas id="chart" height="150"></canvas></div>
-<p style="text-align:center;margin-top:2rem;"><a href="https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/" target="_blank">資料來源：香港天文台（10 分鐘風速）</a> | 更新：2026/02/28</p>
+
+<div class="card">
+  <canvas id="chart" height="150"></canvas>
+</div>
+
+<p style="text-align:center;margin-top:2rem;">
+  <a href="https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/" target="_blank">
+    資料來源：香港天文台（10 分鐘風速）
+  </a> | 更新：2026/02/28
+</p>
 </body>
 </html>
