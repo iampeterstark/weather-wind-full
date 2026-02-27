@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>香港 10 分鐘風向/風速</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;margin:2rem;background:#f0f8ff;}
+  h1{text-align:center;}
+  .card{background:#fff;padding:1rem;margin-bottom:1.5rem;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.07);}
+  table{width:100%;border-collapse:collapse;margin-top:.5rem;}
+  th,td{border:1px solid #ddd;padding:.5rem;text-align:center;}
+  th{background:#eee;}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+function windArrow(deg){
+  const size=20; const rad=(deg-90)*Math.PI/180;
+  const x=size/2+(size/2)*Math.cos(rad);
+  const y=size/2+(size/2)*Math.sin(rad);
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><line x1="${size/2}" y1="${size/2}" x2="${x}" y2="${y}" stroke="#1e90ff" stroke-width="2"/><circle cx="${size/2}" cy="${size/2}" r="${size/4}" fill="#1e90ff"/></svg>`;
+}
+let windData=[];let filtered=[];
+async function load(){
+  const resp=await fetch('https://portal.csdi.gov.hk/geoportal/api/records/1.0/search?datasetId=hko_rcd_1634953844424_88011&lang=zh-hk&format=geojson&limit=500');
+  const geo=await resp.json();
+  windData=geo.features.map(f=>({district:f.properties.district,time:f.properties.datetime,direction:f.properties.wind_dir,speed:f.properties.wind_spd,maxspeed:f.properties.wind_max}));
+  populateSelect();
+  apply();
+}
+function populateSelect(){
+  const sel=document.getElementById('district');
+  const districts=['全部',...new Set(windData.map(d=>d.district))];
+  sel.innerHTML='';
+  districts.forEach(d=>{const o=document.createElement('option');o.value=d;o.textContent=d;sel.appendChild(o);});
+}
+function apply(){
+  const sel=document.getElementById('district');
+  const choice=sel.value;
+  filtered=choice==='全部'?windData:windData.filter(d=>d.district===choice);
+  renderTable();
+  renderChart();
+  const latest=windData.reduce((a,b)=>a.time>b.time?a:b,null);
+  document.getElementById('updated').textContent='最新資料時間：'+(latest?latest.time.replace('T',' ').replace('+08:00',''):'—');
+}
+function renderTable(){
+  const tbody=document.getElementById('body');
+  tbody.innerHTML='';
+  filtered.forEach(d=>{const tr=document.createElement('tr');tr.innerHTML=`<td>${d.district}</td><td>${new Date(d.time).toLocaleTimeString()}</td><td>${windArrow(d.direction)}</td><td>${d.speed.toFixed(1)}</td><td>${d.maxspeed.toFixed(1)}</td>`;tbody.appendChild(tr);});
+}
+function renderChart(){
+  const ctx=document.getElementById('chart').getContext('2d');
+  const labels=filtered.map(d=>new Date(d.time).toLocaleTimeString());
+  const data={label:'平均風速 (m/s)',data:filtered.map(d=>d.speed),borderColor:'#1e90ff',fill:false,tension:0.2};
+  if(window.myChart) window.myChart.destroy();
+  window.myChart=new Chart(ctx,{type:'line',data:{labels,datasets:[data]},options:{responsive:true}});
+}
+window.addEventListener('load',load);
+</script>
+</head>
+<body>
+<h1>📍 香港 10 分鐘風向/風速</h1>
+<div class="card">
+  <label for="district">選擇區域：</label>
+  <select id="district" onchange="apply()"><option>載入中…</option></select>
+  <p id="updated"></p>
+</div>
+<div class="card">
+  <table><thead><tr><th>區域</th><th>時間</th><th>風向</th><th>平均風速 (m/s)</th><th>最高陣風 (m/s)</th></tr></thead>
+  <tbody id="body"><tr><td colspan="5">載入中…</td></tr></tbody></table>
+</div>
+<div class="card"><canvas id="chart" height="150"></canvas></div>
+<p style="text-align:center;margin-top:2rem;"><a href="https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/" target="_blank">資料來源：香港天文台（10 分鐘風速）</a></p>
+</body>
+</html>
