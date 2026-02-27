@@ -1,245 +1,629 @@
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
-<meta charset="UTF-8">
-<title>香港 10 分鐘風向／風速</title>
-<style>
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    margin: 2rem;
-    background: #f0f8ff;
-  }
-  h1 { text-align: center; }
-  .card {
-    background: #fff;
-    padding: 1rem;
-    margin-bottom: 1.5rem;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.07);
-  }
-  table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
-  th, td {
-    border: 1px solid #ddd;
-    padding: 0.5rem;
-    text-align: center;
-  }
-  th { background: #eee; cursor: pointer; }
-  th:hover { background: #ddd; }
-</style>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script>
-// 1️⃣ 風向箭頭 SVG
-function windArrow(deg) {
-  const size = 20;
-  const rad = (deg - 90) * Math.PI / 180;
-  const x = size / 2 + (size / 2) * Math.cos(rad);
-  const y = size / 2 + (size / 2) * Math.sin(rad);
-  return `
-    <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-      <line x1="${size / 2}" y1="${size / 2}" x2="${x}" y2="${y}" stroke="#1e90ff" stroke-width="2" />
-      <circle cx="${size / 2}" cy="${size / 2}" r="${size / 4}" fill="#1e90ff" />
-    </svg>`;
-}
-
-// 2️⃣ 風向方位點轉角度（N, E, NE, 等等）
-function compassToDeg(dir) {
-  const map = {
-    "N": 0, "NNE": 22.5, "NE": 45, "ENE": 67.5,
-    "E": 90, "ESE": 112.5, "SE": 135, "SSE": 157.5,
-    "S": 180, "SSW": 202.5, "SW": 225, "WSW": 247.5,
-    "W": 270, "WNW": 292.5, "NW": 315, "NNW": 337.5
-  };
-  return map[dir] || 0;
-}
-
-// 3️⃣ 全域變數
-let windData = [];
-let filtered = [];
-
-// 4️⃣ 從「統一 CSV」取得資料
-async function load() {
-  try {
-    const csvUrl = 'https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/latest_10min_wind.csv';
-    const resp = await fetch(csvUrl);
-    if (!resp.ok) {
-      throw new Error(`HTTP Error: ${resp.status}`);
-    }
-    const text = await resp.text();
-    const lines = text.split('\n').filter(line => line.trim());
-
-    const records = [];
-    for (let i = 1; i < lines.length; i++) {  // 第 0 行是 header
-      const cols = lines[i].split(',');
-      if (cols.length < 5) continue;
-
-      const timeStr = cols[0];          // 例如 202510260210
-      const station = cols[1];
-      const dirStr  = cols[2];          // "Northeast"
-      const speed   = parseFloat(cols[3]);  // km/h
-      const maxg    = parseFloat(cols[4]);  // km/h
-
-      // 轉成時間字串，方便排序與顯示
-      // e.g. 202510260210 -> 2025-10-26T02:10:00+08:00
-      const y = timeStr.slice(0, 4);
-      const M = timeStr.slice(4, 6);
-      const d = timeStr.slice(6, 8);
-      const h = timeStr.slice(8, 10);
-      const m = timeStr.slice(10, 12);
-      const timeISO = `${y}-${M}-${d}T${h}:${m}:00+08:00`;
-
-      const direction = compassToDeg(dirStr);
-
-      records.push({
-        station: station,
-        district: station,  // 你可以改成香港區名，目前先用站名
-        time: timeISO,
-        direction: direction,
-        speed: speed,
-        maxspeed: maxg
-      });
-    }
-
-    // 5️⃣ 降序排序（最新在上）
-    windData = records.sort((a, b) => new Date(b.time) - new Date(a.time));
-
-    // 6️⃣ 填充下拉選單
-    populateSelect();
-    // 7️⃣ 預設顯示全部
-    apply();
-
-  } catch (error) {
-    console.error('載入失敗：', error);
-    document.getElementById('body').innerHTML = `
-      <tr><td colspan="5" style="color: red;">資料載入失敗，請檢查網路或API</td></tr>`;
-  }
-}
-
-// 8️⃣ 填充下拉選單（站名）
-function populateSelect() {
-  const sel = document.getElementById('district');
-  const stations = ['全部', ...new Set(windData.map(d => d.station))].sort();
-  sel.innerHTML = '';
-
-  stations.forEach(station => {
-    const o = document.createElement('option');
-    o.value = station;
-    o.textContent = station;
-    sel.appendChild(o);
-  });
-}
-
-// 9️⃣ 根據「選擇站名」過濾 + 重新排序
-function apply() {
-  const sel = document.getElementById('district');
-  const choice = sel.value;
-  filtered = choice === '全部'
-    ? [...windData]
-    : windData.filter(d => d.station === choice);
-  filtered.sort((a, b) => new Date(b.time) - new Date(a.time));
-
-  renderTable();
-  renderChart();
-
-  const latest = filtered[0] || windData[0];
-  document.getElementById('updated').textContent =
-    '最新資料時間：' +
-    (latest
-      ? new Date(latest.time).toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong' })
-      : '—');
-}
-
-// ⑩ 渲染表格
-function renderTable() {
-  const tbody = document.getElementById('body');
-  tbody.innerHTML = '';
-
-  if (filtered.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5">目前沒有資料</td></tr>';
-    return;
-  }
-
-  filtered.forEach(d => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${d.station}</td>
-      <td>${new Date(d.time).toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong' })}</td>
-      <td>${windArrow(d.direction)}</td>
-      <td>${d.speed.toFixed(1)}</td>
-      <td>${d.maxspeed.toFixed(1)}</td>`;
-    tbody.appendChild(tr);
-  });
-}
-
-// ⑪ 渲染圖表
-function renderChart() {
-  const ctx = document.getElementById('chart').getContext('2d');
-  const dataToShow = filtered.slice(0, 20);  // 只取前 20 筆
-
-  const labels = dataToShow.map(d => {
-    return new Date(d.time).toLocaleTimeString('zh-HK', { timeZone: 'Asia/Hong_Kong' });
-  });
-
-  const data = {
-    label: '平均風速 (km/h)',
-     dataToShow.map(d => d.speed),
-    borderColor: '#1e90ff',
-    fill: false,
-    tension: 0.2
-  };
-
-  if (window.myChart) window.myChart.destroy();
-  window.myChart = new Chart(ctx, {
-    type: 'line',
-     { labels, datasets: [data] },
-    options: {
-      responsive: true,
-      scales: {
-        y: { beginAtZero: true }
-      }
-    }
-  });
-}
-
-// 頁面載入後開始載入資料
-window.addEventListener('load', load);
-</script>
+    <meta charset="UTF-8" />
+    <title>香港 10 分鐘最新風況</title>
+    <style>
+        body {
+            font-family: Arial, "Microsoft JhengHei", sans-serif;
+            margin: 20px;
+            background-color: #f5f7fa;
+        }
+        h1 {
+            text-align: center;
+        }
+        #app {
+            max-width: 800px;
+            margin: 0 auto;
+            background: #ffffff;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        label {
+            font-weight: bold;
+        }
+        select {
+            padding: 6px 8px;
+            font-size: 14px;
+            margin-top: 5px;
+            margin-bottom: 15px;
+            width: 100%;
+        }
+        .info-box {
+            margin-top: 15px;
+            padding: 15px;
+            border-radius: 8px;
+            background: #f0f4ff;
+        }
+        .info-item {
+            margin-bottom: 8px;
+        }
+        .info-label {
+            font-weight: bold;
+            display: inline-block;
+            min-width: 150px;
+        }
+        .error {
+            color: #b71c1c;
+            margin-top: 10px;
+        }
+        .loading {
+            color: #1565c0;
+            margin-top: 10px;
+        }
+        footer {
+            margin-top: 25px;
+            font-size: 12px;
+            color: #777;
+            text-align: center;
+        }
+    </style>
 </head>
 <body>
-<h1>📍 香港 10 分鐘風向／風速（最新優先）</h1>
+<div id="app">
+    <h1>香港最新 10 分鐘風況（HKO Open Data）</h1>
 
-<div class="card">
-  <label for="district">選擇氣象站：</label>
-  <select id="district" onchange="apply()">
-    <option>載入中…</option>
-  </select>
-  <p id="updated" style="color: #666; margin-top: 0.5rem;"></p>
+    <!-- 選擇氣象站 -->
+    <label for="stationSelect">請選擇自動氣象站：</label>
+    <select id="stationSelect"></select>
+
+    <!-- 資訊顯示區 -->
+    <div id="status" class="loading"></div>
+    <div id="error" class="error"></div>
+
+    <div class="info-box" id="resultBox" style="display:none;">
+        <div class="info-item">
+            <span class="info-label">氣象站：</span>
+            <span id="stationName"></span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">最後更新時間：</span>
+            <span id="updateTime"></span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">10 分鐘平均風向：</span>
+            <span id="windDir"></span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">10 分鐘平均風速：</span>
+            <span id="windSpeed"></span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">10 分鐘最高陣風：</span>
+            <span id="windGust"></span>
+        </div>
+    </div>
+
+    <footer>
+        資料來源：香港天文台開放數據（最新 10 分鐘平均風向、平均風速及最高陣風）<br/>
+        更新頻率約每 10 分鐘一次。
+    </footer>
 </div>
 
-<div class="card">
-  <table>
-    <thead>
-      <tr>
-        <th>氣象站</th>
-        <th>時間</th>
-        <th>風向</th>
-        <th>平均風速 (km/h)</th>
-        <th>最高陣風 (km/h)</th>
-      </tr>
-    </thead>
-    <tbody id="body">
-      <tr><td colspan="5">載入中…</td></tr>
-    </tbody>
-  </table>
-</div>
+<script>
+// ===== 1. 你的 GeoJSON 資料（直接貼進來） =====
+const geojson = {
+    "type" : "FeatureCollection",
+    "name" : "latest_10min_wind",
+    "features" : [
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.1558333, 22.2888889 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Central Pier",
+                "AutomaticWeatherStation_sc" : "中环码头",
+                "AutomaticWeatherStation_uc" : "中環碼頭",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_0.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 113.9219444, 22.3094444 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Chek Lap Kok",
+                "AutomaticWeatherStation_sc" : "赤鱲角",
+                "AutomaticWeatherStation_uc" : "赤鱲角",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_1.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.0266667, 22.2011111 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Cheung Chau",
+                "AutomaticWeatherStation_sc" : "长 洲",
+                "AutomaticWeatherStation_uc" : "長 洲",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_2.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.0291667, 22.2108333 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Cheung Chau Beach",
+                "AutomaticWeatherStation_sc" : "长洲泳滩",
+                "AutomaticWeatherStation_uc" : "長洲泳灘",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_3.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.1127778, 22.285 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Green Island",
+                "AutomaticWeatherStation_sc" : "青 洲",
+                "AutomaticWeatherStation_uc" : "青 洲",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_4.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.21429, 22.2183 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Hong Kong Sea School",
+                "AutomaticWeatherStation_sc" : "香港航海學校",
+                "AutomaticWeatherStation_uc" : "香港航海學校",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_5.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.2133333, 22.3097222 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Kai Tak",
+                "AutomaticWeatherStation_sc" : "启 德",
+                "AutomaticWeatherStation_uc" : "啟 德",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_6.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.1727778, 22.3119444 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "King's Park",
+                "AutomaticWeatherStation_sc" : "京士柏",
+                "AutomaticWeatherStation_uc" : "京士柏",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_7.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.1086111, 22.2261111 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Lamma Island",
+                "AutomaticWeatherStation_sc" : "南丫岛",
+                "AutomaticWeatherStation_uc" : "南丫島",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_8.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 113.9836111, 22.4688889 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Lau Fau Shan",
+                "AutomaticWeatherStation_sc" : "流浮山",
+                "AutomaticWeatherStation_uc" : "流浮山",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_9.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 113.9127778, 22.2586111 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Ngong Ping",
+                "AutomaticWeatherStation_sc" : "昂 坪",
+                "AutomaticWeatherStation_uc" : "昂 坪",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_10.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.199722, 22.294444 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "North Point",
+                "AutomaticWeatherStation_sc" : "北 角",
+                "AutomaticWeatherStation_uc" : "北 角",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_11.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.0433333, 22.2911111 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Peng Chau",
+                "AutomaticWeatherStation_sc" : "坪 洲",
+                "AutomaticWeatherStation_uc" : "坪 洲",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_12.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.2744444, 22.3755556 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Sai Kung",
+                "AutomaticWeatherStation_sc" : "西 贡",
+                "AutomaticWeatherStation_uc" : "西 貢",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_13.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 113.8911111, 22.3458333 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Sha Chau",
+                "AutomaticWeatherStation_sc" : "沙 洲",
+                "AutomaticWeatherStation_uc" : "沙 洲",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_14.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.21, 22.4025 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Sha Tin",
+                "AutomaticWeatherStation_sc" : "沙 田",
+                "AutomaticWeatherStation_uc" : "沙 田",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_15.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.0847222, 22.4361111 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Shek Kong",
+                "AutomaticWeatherStation_sc" : "石 岗",
+                "AutomaticWeatherStation_uc" : "石 崗",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_16.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.2186111, 22.2141667 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Stanley",
+                "AutomaticWeatherStation_sc" : "赤 柱",
+                "AutomaticWeatherStation_uc" : "赤 柱",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_17.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.16842, 22.293008 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Star Ferry",
+                "AutomaticWeatherStation_sc" : "天星码头",
+                "AutomaticWeatherStation_uc" : "天星碼頭",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_18.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.1566667, 22.5286111 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Ta Kwu Ling",
+                "AutomaticWeatherStation_sc" : "打鼓岭",
+                "AutomaticWeatherStation_uc" : "打鼓嶺",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_19.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.2375, 22.4752778 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Tai Mei Tuk",
+                "AutomaticWeatherStation_sc" : "大美督",
+                "AutomaticWeatherStation_uc" : "大美督",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_20.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.1841667, 22.4425 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Tai Po Kau",
+                "AutomaticWeatherStation_sc" : "大埔滘",
+                "AutomaticWeatherStation_uc" : "大埔滘",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_21.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.3605556, 22.4713889 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Tap Mun",
+                "AutomaticWeatherStation_sc" : "塔 门",
+                "AutomaticWeatherStation_uc" : "塔 門",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_22.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.2177778, 22.3577778 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Tate's Cairn",
+                "AutomaticWeatherStation_sc" : "大老山",
+                "AutomaticWeatherStation_uc" : "大老山",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_23.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.2555556, 22.3158333 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Tseung Kwan O",
+                "AutomaticWeatherStation_sc" : "将军澳",
+                "AutomaticWeatherStation_uc" : "將軍澳",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_24.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.11, 22.3441667 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Tsing Yi",
+                "AutomaticWeatherStation_sc" : "青 衣",
+                "AutomaticWeatherStation_uc" : "青 衣",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_25.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 113.9641667, 22.3858333 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Tuen Mun",
+                "AutomaticWeatherStation_sc" : "屯 门",
+                "AutomaticWeatherStation_uc" : "屯 門",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_26.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.3033333, 22.1822222 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Waglan Island",
+                "AutomaticWeatherStation_sc" : "横澜岛",
+                "AutomaticWeatherStation_uc" : "橫瀾島",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_27.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.0088889, 22.4666667 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Wetland Park",
+                "AutomaticWeatherStation_sc" : "湿地公园",
+                "AutomaticWeatherStation_uc" : "濕地公園",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_28.csv"
+            }
+        },
+        {
+            "type" : "Feature",
+            "geometry" : {
+                "type" : "Point",
+                "coordinates" : [ 114.1736111, 22.2477778 ]
+            },
+            "properties" : {
+                "AutomaticWeatherStation_en" : "Wong Chuk Hang",
+                "AutomaticWeatherStation_sc" : "黄竹坑",
+                "AutomaticWeatherStation_uc" : "黃竹坑",
+                "Data_url" : "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_29.csv"
+            }
+        }
+    ]
+};
 
-<div class="card">
-  <canvas id="chart" height="150"></canvas>
-</div>
+// ===== 2. DOM 取得元素 =====
+const stationSelect = document.getElementById('stationSelect');
+const statusDiv     = document.getElementById('status');
+const errorDiv      = document.getElementById('error');
+const resultBox     = document.getElementById('resultBox');
 
-<p style="text-align: center; margin-top: 2rem;">
-  <a href="https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/latest_10min_wind.csv" target="_blank">
-    資料來源：香港天文台（10 分鐘風速）
-  </a> | 更新：2026/02/28
-</p>
+const stationNameEl = document.getElementById('stationName');
+const updateTimeEl  = document.getElementById('updateTime');
+const windDirEl     = document.getElementById('windDir');
+const windSpeedEl   = document.getElementById('windSpeed');
+const windGustEl    = document.getElementById('windGust');
+
+// ===== 3. 初始化下拉選單 =====
+function initStationOptions() {
+    geojson.features.forEach((feature, index) => {
+        const opt = document.createElement('option');
+        // 下拉選單顯示中文站名（自動氣象站_繁體）
+        opt.textContent = feature.properties.AutomaticWeatherStation_uc;
+        opt.value = index; // 用 index 來找對應 feature
+        stationSelect.appendChild(opt);
+    });
+}
+
+// ===== 4. 解析 CSV：只取最新一行 =====
+// HKO 10min CSV 欄位：DateTime, Station, MeanDir, MeanSpeed, MaxGust [web:15]
+function parseLatestRowFromCSV(csvText) {
+    const lines = csvText.trim().split('\n');
+
+    if (lines.length < 2) {
+        throw new Error('CSV 資料不足');
+    }
+
+    // 第一行是標題，不要
+    const dataLines = lines.slice(1);
+
+    // 取最後一行做為「最新」資料
+    const lastLine = dataLines[dataLines.length - 1];
+
+    // 以逗號分隔欄位
+    const cols = lastLine.split(',');
+
+    if (cols.length < 5) {
+        throw new Error('CSV 欄位數量不符預期');
+    }
+
+    const dateTime = cols[0].trim(); // YYYYMMDDHHMN
+    const station  = cols[1].trim();
+    const windDir  = cols[2].trim(); // 風向（羅經方位）
+    const meanSpd  = cols[3].trim(); // 平均風速（km/h）
+    const maxGust  = cols[4].trim(); // 最高陣風（km/h）
+
+    return {
+        dateTime,
+        station,
+        windDir,
+        meanSpd,
+        maxGust
+    };
+}
+
+// 將 YYYYMMDDHHMN 轉成較好看的字串
+function formatDateTime(yyyymmddhhmn) {
+    if (yyyymmddhhmn.length !== 12) return yyyymmddhhmn;
+
+    const y = yyyymmddhhmn.slice(0, 4);
+    const m = yyyymmddhhmn.slice(4, 6);
+    const d = yyyymmddhhmn.slice(6, 8);
+    const hh = yyyymmddhhmn.slice(8, 10);
+    const mn = yyyymmddhhmn.slice(10, 12);
+
+    return `${y}-${m}-${d} ${hh}:${mn}`;
+}
+
+// ===== 5. 根據選擇的站點抓資料 =====
+async function loadStationData(index) {
+    const feature = geojson.features[index];
+    if (!feature) return;
+
+    const stationName = feature.properties.AutomaticWeatherStation_uc;
+    const dataUrl = feature.properties.Data_url;
+
+    statusDiv.textContent = `正在載入「${stationName}」的最新風況...`;
+    errorDiv.textContent = '';
+    resultBox.style.display = 'none';
+
+    try {
+        const response = await fetch(dataUrl);
+        if (!response.ok) {
+            throw new Error('HTTP 狀態碼 ' + response.status);
+        }
+
+        const csvText = await response.text();
+        const latest = parseLatestRowFromCSV(csvText);
+
+        stationNameEl.textContent = stationName;
+        updateTimeEl.textContent  = formatDateTime(latest.dateTime);
+        windDirEl.textContent     = latest.windDir || 'N/A';
+        windSpeedEl.textContent   = latest.meanSpd ? latest.meanSpd + ' km/h' : 'N/A';
+        windGustEl.textContent    = latest.maxGust ? latest.maxGust + ' km/h' : 'N/A';
+
+        resultBox.style.display = 'block';
+        statusDiv.textContent = '載入完成。';
+    } catch (err) {
+        console.error(err);
+        errorDiv.textContent = '載入資料時發生錯誤：' + err.message;
+        statusDiv.textContent = '';
+    }
+}
+
+// ===== 6. 頁面載入時初始化 =====
+window.addEventListener('DOMContentLoaded', () => {
+    initStationOptions();
+
+    // 預設載入第一個站
+    if (geojson.features.length > 0) {
+        stationSelect.value = 0;
+        loadStationData(0);
+    }
+
+    stationSelect.addEventListener('change', () => {
+        const index = parseInt(stationSelect.value, 10);
+        loadStationData(index);
+    });
+});
+</script>
 </body>
 </html>
