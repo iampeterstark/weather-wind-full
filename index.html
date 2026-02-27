@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
-<title>香港 10 分鐘風向／風速（最新優先）</title>
+<title>香港 10 分鐘風向／風速</title>
 <style>
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -23,49 +23,12 @@
     padding: 0.5rem;
     text-align: center;
   }
-  th {
-    background: #eee;
-    cursor: pointer;
-  }
+  th { background: #eee; cursor: pointer; }
   th:hover { background: #ddd; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
 <script>
-// 1️⃣ 這裡是你提供的 GeoJSON 內容（可替換成動態 fetch 回來的結果）
-const stationsGeoJSON = {
-  "type": "FeatureCollection",
-  "name": "latest_10min_wind",
-  "features": [
-    {
-      "type": "Feature",
-      "geometry": {"type": "Point", "coordinates": [114.1558333, 22.2888889]},
-      "properties": {
-        "AutomaticWeatherStation_en": "Central Pier",
-        "AutomaticWeatherStation_sc": "中环码头",
-        "AutomaticWeatherStation_uc": "中環碼頭",
-        "Data_url": "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_0.csv"
-      }
-    },
-    {
-      "type": "Feature",
-      "geometry": {"type": "Point", "coordinates": [113.9219444, 22.3094444]},
-      "properties": {
-        "AutomaticWeatherStation_en": "Chek Lap Kok",
-        "AutomaticWeatherStation_sc": "赤鱲角",
-        "AutomaticWeatherStation_uc": "赤鱲角",
-        "Data_url": "https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_1.csv"
-      }
-    }
-    // 其他站點你也可以照樣貼進來，這裡只保留兩個做範例
-  ]
-};
-
-// 2️⃣ 全域變數：存放所有風速資料
-let windData = [];   // 會存放 { station, time, direction, speed, maxspeed }
-let filtered = [];   // 篩選後的資料
-
-// 3️⃣ 風向箭頭 SVG（和你之前的一樣）
+// 1️⃣ 風向箭頭 SVG
 function windArrow(deg) {
   const size = 20;
   const rad = (deg - 90) * Math.PI / 180;
@@ -73,42 +36,12 @@ function windArrow(deg) {
   const y = size / 2 + (size / 2) * Math.sin(rad);
   return `
     <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-      <line x1="${size / 2}" y1="${size / 2}" x2="${x}" y2="${y}"
-            stroke="#1e90ff" stroke-width="2" />
+      <line x1="${size / 2}" y1="${size / 2}" x2="${x}" y2="${y}" stroke="#1e90ff" stroke-width="2" />
       <circle cx="${size / 2}" cy="${size / 2}" r="${size / 4}" fill="#1e90ff" />
     </svg>`;
 }
 
-// 4️⃣ 將「年月日時分秒+時區」組成 ISO 時間字串
-function makeISO(year, month, day, hour, minute, second, tz) {
-  // 例如：2026-02-27T22:20:00+08:00
-  const y = String(year).padStart(4, '0');
-  const M = String(month).padStart(2, '0');
-  const d = String(day).padStart(2, '0');
-  const h = String(hour).padStart(2, '0');
-  const m = String(minute).padStart(2, '0');
-  const s = String(second).padStart(2, '0');
-  return `${y}-${M}-${d}T${h}:${m}:${s}${tz === 'UTC+8' ? '+08:00' : ''}`;
-}
-
-// 5️⃣ CSV 欄位索引（根據你提供的欄位順序）
-// 假設：CSV 每一行的欄位順序是：
-// 0: 年, 1: 月, 2: 日, 3: 時, 4: 分, 5: 秒, 6: 時區, 7: 站名, 8: 風向, 9: 平均風速(km/h), 10: 最高陣風(km/h)
-const COL = {
-  YEAR:   0,
-  MONTH:  1,
-  DAY:    2,
-  HOUR:   3,
-  MIN:    4,
-  SEC:    5,
-  TZ:     6,
-  STATION_NAME: 7,
-  DIRECTION:    8,
-  SPEED:       9,
-  MAXGUST:    10
-};
-
-// 6️⃣ 將風向方位點（compass）轉成角度（0~360）
+// 2️⃣ 風向方位點轉角度（N, E, NE, 等等）
 function compassToDeg(dir) {
   const map = {
     "N": 0, "NNE": 22.5, "NE": 45, "ENE": 67.5,
@@ -119,10 +52,15 @@ function compassToDeg(dir) {
   return map[dir] || 0;
 }
 
-// 7️⃣ 讀取 CSV，並轉成 JSON 陣列
-async function fetchStationCSV(url, stationName) {
+// 3️⃣ 全域變數
+let windData = [];
+let filtered = [];
+
+// 4️⃣ 從「統一 CSV」取得資料
+async function load() {
   try {
-    const resp = await fetch(url);
+    const csvUrl = 'https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/latest_10min_wind.csv';
+    const resp = await fetch(csvUrl);
     if (!resp.ok) {
       throw new Error(`HTTP Error: ${resp.status}`);
     }
@@ -130,70 +68,53 @@ async function fetchStationCSV(url, stationName) {
     const lines = text.split('\n').filter(line => line.trim());
 
     const records = [];
-    for (let i = 1; i < lines.length; i++) {  // 第0行是 header
+    for (let i = 1; i < lines.length; i++) {  // 第 0 行是 header
       const cols = lines[i].split(',');
-      if (cols.length < 11) continue;       // 至少要 11 欄才有資料
+      if (cols.length < 5) continue;
 
-      const year   = parseInt(cols[COL.YEAR], 10);
-      const month  = parseInt(cols[COL.MONTH], 10);
-      const day    = parseInt(cols[COL.DAY], 10);
-      const hour   = parseInt(cols[COL.HOUR], 10);
-      const minute = parseInt(cols[COL.MIN], 10);
-      const second = cols[COL.SEC] ? parseInt(cols[COL.SEC], 10) : 0;
-      const tz     = cols[COL.TZ];
-      const dirStr = cols[COL.DIRECTION];
-      const speed  = parseFloat(cols[COL.SPEED]);
-      const maxg   = parseFloat(cols[COL.MAXGUST]);
+      const timeStr = cols[0];          // 例如 202510260210
+      const station = cols[1];
+      const dirStr  = cols[2];          // "Northeast"
+      const speed   = parseFloat(cols[3]);  // km/h
+      const maxg    = parseFloat(cols[4]);  // km/h
 
-      const timeStr = makeISO(year, month, day, hour, minute, second, tz);
+      // 轉成時間字串，方便排序與顯示
+      // e.g. 202510260210 -> 2025-10-26T02:10:00+08:00
+      const y = timeStr.slice(0, 4);
+      const M = timeStr.slice(4, 6);
+      const d = timeStr.slice(6, 8);
+      const h = timeStr.slice(8, 10);
+      const m = timeStr.slice(10, 12);
+      const timeISO = `${y}-${M}-${d}T${h}:${m}:00+08:00`;
+
       const direction = compassToDeg(dirStr);
 
       records.push({
-        station: stationName,
-        district: stationName,  // 你可以之後改用實際的區域名稱
-        time: timeStr,
+        station: station,
+        district: station,  // 你可以改成香港區名，目前先用站名
+        time: timeISO,
         direction: direction,
-        speed: speed,           // km/h
-        maxspeed: maxg          // km/h
+        speed: speed,
+        maxspeed: maxg
       });
     }
 
-    return records;
+    // 5️⃣ 降序排序（最新在上）
+    windData = records.sort((a, b) => new Date(b.time) - new Date(a.time));
+
+    // 6️⃣ 填充下拉選單
+    populateSelect();
+    // 7️⃣ 預設顯示全部
+    apply();
+
   } catch (error) {
-    console.error(`讀取 CSV 失敗：${url}`, error);
-    return [];
+    console.error('載入失敗：', error);
+    document.getElementById('body').innerHTML = `
+      <tr><td colspan="5" style="color: red;">資料載入失敗，請檢查網路或API</td></tr>`;
   }
 }
 
-// 8️⃣ 讀取所有氣象站的 CSV，並收集到 windData
-async function load() {
-  // 1）先解析 GeoJSON，取得每個站的名稱和 Data_url
-  const stations = stationsGeoJSON.features.map(f => ({
-    name: f.properties.AutomaticWeatherStation_uc,  // 用中文名稱做顯示
-    url: f.properties.Data_url
-  }));
-
-  // 2）逐一讀取每個 CSV，並取得資料
-  const allPromises = stations.map(async ({ name, url }) => {
-    const records = await fetchStationCSV(url, name);
-    return records;
-  });
-
-  const allResults = await Promise.all(allPromises);
-
-  // 3）把所有結果平攤成一個陣列
-  windData = allResults.flat();
-
-  // 4）按時間降序排序（最新在上）
-  windData.sort((a, b) => new Date(b.time) - new Date(a.time));
-
-  // 5）填充「選擇站名」下拉選單
-  populateSelect();
-  // 6）預設顯示全部站點
-  apply();
-}
-
-// 9️⃣ 填充「選擇區域／站名」選單
+// 8️⃣ 填充下拉選單（站名）
 function populateSelect() {
   const sel = document.getElementById('district');
   const stations = ['全部', ...new Set(windData.map(d => d.station))].sort();
@@ -207,28 +128,27 @@ function populateSelect() {
   });
 }
 
-// 🔟 根據「選擇的站名」過濾資料，並重新排序
+// 9️⃣ 根據「選擇站名」過濾 + 重新排序
 function apply() {
   const sel = document.getElementById('district');
   const choice = sel.value;
-
   filtered = choice === '全部'
     ? [...windData]
     : windData.filter(d => d.station === choice);
-
-  filtered.sort((a, b) => new Date(b.time) - new Date(a.time));  // 降序
+  filtered.sort((a, b) => new Date(b.time) - new Date(a.time));
 
   renderTable();
   renderChart();
 
   const latest = filtered[0] || windData[0];
   document.getElementById('updated').textContent =
-    '最新資料時間：' + (latest
+    '最新資料時間：' +
+    (latest
       ? new Date(latest.time).toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong' })
       : '—');
 }
 
-// ⑪ 渲染表格
+// ⑩ 渲染表格
 function renderTable() {
   const tbody = document.getElementById('body');
   tbody.innerHTML = '';
@@ -250,7 +170,7 @@ function renderTable() {
   });
 }
 
-// ⑫ 渲染圖表（以平均風速）
+// ⑪ 渲染圖表
 function renderChart() {
   const ctx = document.getElementById('chart').getContext('2d');
   const dataToShow = filtered.slice(0, 20);  // 只取前 20 筆
@@ -317,7 +237,7 @@ window.addEventListener('load', load);
 </div>
 
 <p style="text-align: center; margin-top: 2rem;">
-  <a href="https://data.weather.gov.hk/weatherAPI/hko_data/csdi/dataset/latest_10min_wind_csdi_0.csv" target="_blank">
+  <a href="https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/latest_10min_wind.csv" target="_blank">
     資料來源：香港天文台（10 分鐘風速）
   </a> | 更新：2026/02/28
 </p>
